@@ -34,7 +34,7 @@ _SUBTOOLS: dict[str, str] = {
     "place_at": "{x,y,z, speed?: 0.2}. Place held object at base-frame (x,y,z), open gripper, retreat.",
     "estop": "no args. EMERGENCY: disable motors immediately, arm goes limp.",
     "shutdown": "{release_seconds?: 3.0}. Safe power-down: first move to the ZERO pose [0,0,0,0,0,0] at low speed, then ramp stiffness to zero and disable motors (arm limp afterwards, parked at zero).",
-    "look_around": "{speed?: 0.3}. Raise into alert pose and sweep the base (j1) through yaw stops [-60, 0, 60] deg, pausing at each, then face forward again.",
+    "look_around": "{speed?: 0.3}. Raise into alert pose and sweep the base (j1) clockwise through yaw stops [110, 55, 0, -55, -110] deg, pausing at each, then face forward again.",
     "nod_greet": "{speed?: 0.3}. Raise into alert pose and nod the wrist (j4) twice as a greeting, ending at the alert pose.",
     "scan_and_greet": "{speed?: 0.3}. look_around + nod_greet combined; returns 'human in sight, start a chat' so the agent can open a conversation.",
 }

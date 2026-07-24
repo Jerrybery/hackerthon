@@ -39,9 +39,12 @@ NEUTRAL_DEG = [0.0, 34.0, -23.0, -29.0, 0.0, 0.0]
 # x=0.168m, tau_j2=0.2 / tau_j3=-3.3 Nm (limits 25/20).
 SCAN_POSE_DEG = [0.0, 60.0, -90.0, 30.0, 0.0, 0.0]
 
-# j1 yaw stops (deg) visited while looking around. Each stop is a future
-# face-detection checkpoint. ±60 keeps far inside the ±120 limit.
-SCAN_YAW_STOPS_DEG = [-60.0, 0.0, 60.0]
+# j1 yaw stops (deg) visited while looking around: single CLOCKWISE pass
+# (viewed from above, j1 decreasing is clockwise), +110 down to -110.
+# Each stop is a future face-detection checkpoint. NOTE: j1 limits are
+# ±120 (240° total travel), so a full 270° sweep is not reachable;
+# ±110 keeps margin off the soft limits.
+SCAN_YAW_STOPS_DEG = [110.0, 55.0, 0.0, -55.0, -110.0]
 
 # Pause (s) at each yaw stop — gives a camera/detector time to look.
 SCAN_DWELL_S = 0.8
