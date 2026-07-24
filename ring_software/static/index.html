@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ring Sound 控制台</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="topbar" aria-label="设备连接">
+        <div class="brand">
+          <div class="ring-mark" aria-hidden="true"></div>
+          <div>
+            <h1>Ring Sound 控制台</h1>
+            <p id="connectionText">未连接</p>
+          </div>
+        </div>
+        <div class="connect-strip">
+          <input id="addressInput" type="text" autocomplete="off" spellcheck="false" placeholder="戒指 MAC 地址，例如 F1:C1:8A:35:40:FB" />
+          <button id="scanBtn" class="secondary"><i data-lucide="radar"></i><span>扫描</span></button>
+          <button id="connectBtn"><i data-lucide="bluetooth-connected"></i><span>连接</span></button>
+          <button id="disconnectBtn" class="secondary"><i data-lucide="power"></i><span>断开</span></button>
+        </div>
+      </section>
+
+      <section id="deviceList" class="device-list" aria-live="polite"></section>
+
+      <section class="status-grid" aria-label="戒指状态">
+        <div class="metric">
+          <span>电量</span>
+          <strong id="batteryText">--</strong>
+        </div>
+        <div class="metric">
+          <span>录音空间</span>
+          <strong id="storageText">--</strong>
+        </div>
+        <div class="metric">
+          <span>固件</span>
+          <strong id="firmwareText">--</strong>
+        </div>
+        <div class="metric">
+          <span>模式</span>
+          <strong id="modeText">待机</strong>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <div class="panel system-panel">
+          <div class="panel-head">
+            <div>
+              <h2>系统信息</h2>
+              <p id="systemSubtitle">连接后读取 SN、型号、时间和存储状态</p>
+            </div>
+            <button id="systemBtn" class="secondary"><i data-lucide="refresh-cw"></i><span>刷新</span></button>
+          </div>
+          <dl class="info-list" id="systemInfo">
+            <div><dt>型号</dt><dd>--</dd></div>
+            <div><dt>SN</dt><dd>--</dd></div>
+            <div><dt>CPUID</dt><dd>--</dd></div>
+            <div><dt>系统时间</dt><dd>--</dd></div>
+            <div><dt>充电状态</dt><dd>--</dd></div>
+          </dl>
+        </div>
+
+        <div class="panel audio-panel">
+          <div class="panel-head">
+            <div>
+              <h2>录音</h2>
+              <p id="audioSubtitle">保存为原始 bin，同时解码生成 WAV</p>
+            </div>
+            <button id="audioCountBtn" class="secondary"><i data-lucide="list-music"></i><span>数量</span></button>
+          </div>
+          <div class="audio-actions">
+            <label>
+              <span>文件索引</span>
+              <input id="fileIndexInput" type="number" min="0" step="1" value="0" />
+            </label>
+            <button id="downloadBtn"><i data-lucide="download"></i><span>下载</span></button>
+            <button id="receiveBtn" class="secondary"><i data-lucide="radio-receiver"></i><span>等待新录音</span></button>
+          </div>
+          <div class="progress">
+            <div id="progressBar"></div>
+          </div>
+          <div id="audioResult" class="audio-result">暂无录音文件</div>
+          <div class="danger-line">
+            <label class="checkline"><input id="clearConfirm" type="checkbox" />确认删除全部录音</label>
+            <button id="clearBtn" class="danger"><i data-lucide="trash-2"></i><span>清空</span></button>
+          </div>
+        </div>
+
+        <div class="panel imu-panel">
+          <div class="panel-head">
+            <div>
+              <h2>实时 IMU</h2>
+              <p id="imuSubtitle">需要先把戒指切到手势模式</p>
+            </div>
+            <div class="button-row">
+              <button id="imuStartBtn"><i data-lucide="activity"></i><span>开始</span></button>
+              <button id="imuStopBtn" class="secondary"><i data-lucide="square"></i><span>停止</span></button>
+            </div>
+          </div>
+          <canvas id="imuCanvas" width="920" height="260" aria-label="IMU 曲线"></canvas>
+          <div class="legend">
+            <span><b class="x"></b>Acc X</span>
+            <span><b class="y"></b>Acc Y</span>
+            <span><b class="z"></b>Acc Z</span>
+          </div>
+        </div>
+
+        <div class="panel events-panel">
+          <div class="panel-head">
+            <div>
+              <h2>事件</h2>
+              <p>双击、按键和 HMM 手势实时显示</p>
+            </div>
+            <button id="clearLogBtn" class="secondary"><i data-lucide="eraser"></i><span>清屏</span></button>
+          </div>
+          <ol id="eventLog" class="event-log"></ol>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,9 @@
+{"ts": "2026-07-23T16:47:43", "ring_timestamp_ms": 0, "gesture_id": 1, "gesture": "rotate_back", "mode": "winter_soldier", "label": "Winter Soldier / stable grip", "arm_action": "grip"}
+{"ts": "2026-07-23T16:47:43", "ring_timestamp_ms": 0, "gesture_id": 2, "gesture": "rotate_front", "mode": "shinobi", "label": "Shinobi Prosthetic / tool switch", "arm_action": "switch_tool"}
+{"ts": "2026-07-23T16:47:43", "ring_timestamp_ms": 0, "gesture_id": 3, "gesture": "wave", "mode": "devil_breaker", "label": "Devil Breaker / burst action", "arm_action": "burst"}
+{"ts": "2026-07-23T16:47:46", "ring_timestamp_ms": 0, "gesture_id": 1, "gesture": "rotate_back", "mode": "winter_soldier", "label": "Winter Soldier / stable grip", "arm_action": "grip"}
+{"ts": "2026-07-23T16:47:46", "ring_timestamp_ms": 0, "gesture_id": 2, "gesture": "rotate_front", "mode": "shinobi", "label": "Shinobi Prosthetic / tool switch", "arm_action": "switch_tool"}
+{"ts": "2026-07-23T16:47:46", "ring_timestamp_ms": 0, "gesture_id": 3, "gesture": "wave", "mode": "devil_breaker", "label": "Devil Breaker / burst action", "arm_action": "burst"}
+{"ts": "2026-07-23T16:47:52", "ring_timestamp_ms": 0, "gesture_id": 1, "gesture": "rotate_back", "mode": "winter_soldier", "label": "Winter Soldier / stable grip", "arm_action": "grip"}
+{"ts": "2026-07-23T16:47:52", "ring_timestamp_ms": 0, "gesture_id": 2, "gesture": "rotate_front", "mode": "shinobi", "label": "Shinobi Prosthetic / tool switch", "arm_action": "switch_tool"}
+{"ts": "2026-07-23T16:47:52", "ring_timestamp_ms": 0, "gesture_id": 3, "gesture": "wave", "mode": "devil_breaker", "label": "Devil Breaker / burst action", "arm_action": "burst"}
