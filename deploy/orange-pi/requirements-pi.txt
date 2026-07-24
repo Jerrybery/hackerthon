@@ -1,0 +1,50 @@
+# Minimal dependency set for running a1z_mcp_server.py (DimOS MCP + A1Z arm)
+# on Orange Pi (aarch64, Ubuntu 22.04, Python 3.10).
+# Verified against the import closure of:
+#   dimos.agents.mcp.mcp_server + dimos.core.coordination.* + A1Z SDK
+# Heavy packages intentionally EXCLUDED (lazily imported, not needed here):
+#   rerun-sdk, dimos-viewer, numba/llvmlite, open3d, torch, textual, scipy,
+#   opencv-contrib (headless build is enough for capture_wrist_view)
+
+# --- dimos core runtime ---
+numpy>=1.26.4
+pydantic
+pydantic-settings>=2.11.0,<3
+python-dotenv
+packaging>=24.0
+annotation-protocol>=1.4.0
+lazy_loader
+typing_extensions
+plum-dispatch==2.5.7
+reactivex
+sortedcontainers==2.4.0
+structlog>=25.5.0,<26
+toolz>=1.1.0
+psutil>=7.0.0
+protobuf
+lz4>=4.4.5
+
+# --- transports (DIMOS_TRANSPORT=lcm default; zenoh optional) ---
+dimos-lcm>=0.1.3
+lcm-dimos-fork>=1.5.2
+eclipse-zenoh>=1.0.0,<2.0
+
+# --- MCP server (dimos web extra subset) ---
+fastapi>=0.115.6
+sse-starlette>=2.2.1
+uvicorn>=0.34.0
+# langchain-core only: dimos.core.module.get_skills builds skill schemas with
+# langchain_core.tools (the full `langchain` agents extra is NOT needed).
+langchain-core>=1.2.22,<2
+
+# --- kinematics / vision (skills) ---
+pin>=3.3.0
+opencv-python-headless>=4.8
+
+# --- A1Z arm SDK + CAN (HHS USB-CANFD via gs_usb userspace) ---
+python-can>=4.2
+gs_usb>=0.3.1
+pyusb>=1.2
+
+# --- MCP client helper (mcp_call.py, testing) ---
+httpx>=0.27.0

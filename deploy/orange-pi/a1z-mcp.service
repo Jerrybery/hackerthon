@@ -1,0 +1,21 @@
+[Unit]
+Description=A1Z DimOS MCP server (arm control over streamable-HTTP MCP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/dimos-mcp/a1z
+Environment=PYTEST_VERSION=1
+Environment=DIMOS_TRANSPORT=lcm
+# Board-local only; nanobot on the Pi connects via 127.0.0.1.
+# Set 0.0.0.0 here if remote LAN clients ever need the MCP directly.
+Environment=LISTEN_HOST=127.0.0.1
+ExecStart=%h/dimos-mcp/.venv/bin/python a1z_mcp_server.py
+# The unit fail-loops until the HHS USB-CANFD adapter is plugged in;
+# that is expected — keep the backoff gentle on the SBC.
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target
