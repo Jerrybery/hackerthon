@@ -3,9 +3,10 @@
 Runs a ModuleCoordinator with A1ZArmModule + McpServer so the arm is
 controllable through MCP tools (localhost:9990/mcp).
 
-Safety: skills only move at capped speed within joint limits; `estop`
-disables motors immediately (arm goes limp). On exit the control loop stops
-and motors DISABLE — support the arm first.
+Safety: skills only move at capped speed within joint limits; `shutdown`
+ramps stiffness/gravity-comp to zero before disabling motors (graceful),
+`estop` disables motors immediately (arm goes limp). On exit the control
+loop stops and motors DISABLE — support the arm first.
 
 Usage (from dimos repo venv, with CAN deps installed):
     DIMOS_TRANSPORT=lcm python a1z_mcp_server.py
@@ -62,6 +63,7 @@ class A1ZArmModule(Module):
             gravity_comp_factor=1.0,
             zero_gravity_mode=False,
             control_freq_hz=250,
+            with_gripper=True,
         )
         self._robot.start()  # locks current pose immediately
 
@@ -85,9 +87,13 @@ class A1ZArmModule(Module):
             if self._robot is None:
                 return f"ERROR: arm not running (pid={os.getpid()}, robot={self._robot})"
             state = self._robot.get_joint_state()
+            gripper_pos = self._robot.get_gripper_pos()
         pos = [round(math.degrees(p), 2) for p in state["pos"]]
         eff = [round(float(e), 2) for e in state["eff"]]
-        return f"pos(deg)={pos} eff(Nm)={eff}"
+        out = f"pos(deg)={pos} eff(Nm)={eff}"
+        if gripper_pos is not None:
+            out += f" gripper={gripper_pos:.2f} (0=closed, 1=open)"
+        return out
 
     @skill
     def move_to_pose(self, joints_deg: list[float], speed: float = 0.3) -> str:
@@ -112,6 +118,25 @@ class A1ZArmModule(Module):
         return f"reached {joints_deg} deg"
 
     @skill
+    def set_gripper(self, position: float) -> str:
+        """Open or close the gripper.
+
+        position: normalized opening in [0.0, 1.0] — 0.0 = fully closed,
+        1.0 = fully open. Intermediate values are allowed. Closing is
+        force-limited (max 2 Nm), so it can hold an object without
+        crushing it.
+        """
+        with self._lock:
+            if self._robot is None:
+                return "ERROR: arm not running (estopped or not started)"
+            robot = self._robot
+        if robot.gripper is None:
+            return "ERROR: no gripper attached (server started without gripper)"
+        position = min(max(float(position), 0.0), 1.0)
+        robot.command_gripper(position)
+        return f"gripper -> {position:.2f} ({'open' if position >= 0.5 else 'closed' if position <= 0.0 else 'partial'})"
+
+    @skill
     def estop(self) -> str:
         """Emergency stop: disable all motors immediately. ARM GOES LIMP."""
         with self._lock:
@@ -119,6 +144,45 @@ class A1ZArmModule(Module):
                 self._robot.stop()
                 self._robot = None
         return "estopped: motors disabled, arm is limp"
+
+    @skill
+    def shutdown(self, release_seconds: float = 3.0) -> str:
+        """Graceful exit: ramp stiffness and gravity comp to zero over
+        release_seconds (0.5..10), then disable motors. The arm relaxes
+        slowly instead of dropping instantly — still SUPPORT THE ARM, it
+        ends fully limp. The MCP server stays alive afterwards, but arm
+        control needs a process restart.
+        """
+        import time
+
+        release_seconds = min(max(release_seconds, 0.5), 10.0)
+        with self._lock:
+            robot = self._robot
+        if robot is None:
+            return "already shut down (arm not running)"
+        hold_pos = np.array(robot.get_joint_state()["pos"], dtype=float)
+        # SDK defaults (arm_robot.py): position-hold gains
+        kp0 = np.array([30.0, 30.0, 30.0, 20.0, 5.0, 5.0])
+        kd0 = np.array([1.0, 1.0, 1.0, 0.5, 0.5, 0.5])
+        g0 = float(getattr(robot, "gravity_comp_factor", 1.0))
+        steps = max(int(release_seconds / 0.1), 1)
+        for i in range(1, steps + 1):
+            alpha = 1.0 - i / steps
+            robot.gravity_comp_factor = g0 * alpha
+            robot.command_joint_state(
+                {
+                    "pos": hold_pos,
+                    "vel": np.zeros(6),
+                    "kp": kp0 * alpha,
+                    "kd": kd0,
+                }
+            )
+            time.sleep(0.1)
+        with self._lock:
+            if self._robot is not None:
+                self._robot.stop()  # motors DISABLE — arm goes limp
+                self._robot = None
+        return "shutdown complete: soft release done, motors disabled"
 
 
 a1z_mcp = autoconnect(
