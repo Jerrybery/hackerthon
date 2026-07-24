@@ -1,0 +1,12 @@
+[submodule "nanobot"]
+	path = nanobot
+	url = https://github.com/Jerrybery/nanobot.git
+	branch = feat/soul-switching
+[submodule "dimos"]
+	path = dimos
+	url = https://github.com/Jerrybery/dimos.git
+	branch = main
+[submodule "a1z/GALAXEA-A1Z"]
+	path = a1z/GALAXEA-A1Z
+	url = https://github.com/Jerrybery/GALAXEA-A1Z.git
+	branch = main

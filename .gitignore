@@ -1,0 +1,7 @@
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+.kimi-code/
+key_router.py
+.claude/skills/dimos-dev
