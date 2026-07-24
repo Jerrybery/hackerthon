@@ -110,6 +110,25 @@
           </div>
         </div>
 
+        <div class="panel hmm-panel">
+          <div class="panel-head">
+            <div>
+              <h2>HMM 手势识别</h2>
+              <p id="hmmSubtitle">预训练模型待加载</p>
+            </div>
+            <div class="button-row">
+              <button id="hmmStartBtn"><i data-lucide="scan-line"></i><span>识别</span></button>
+              <button id="hmmStopBtn" class="secondary"><i data-lucide="pause"></i><span>暂停</span></button>
+            </div>
+          </div>
+          <div id="hmmResult" class="hmm-result">
+            <span>最近结果</span>
+            <strong>--</strong>
+            <em>置信度 --</em>
+          </div>
+          <div id="hmmModels" class="gesture-grid" aria-label="HMM 预训练模型"></div>
+        </div>
+
         <div class="panel events-panel">
           <div class="panel-head">
             <div>

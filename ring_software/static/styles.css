@@ -241,6 +241,7 @@ p {
 }
 
 .imu-panel,
+.hmm-panel,
 .events-panel {
   grid-column: 1 / -1;
 }
@@ -378,6 +379,49 @@ dd {
   background: var(--gold);
 }
 
+.hmm-result {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  min-height: 64px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfb;
+}
+
+.hmm-result span,
+.hmm-result em {
+  color: var(--muted);
+  font-style: normal;
+}
+
+.hmm-result strong {
+  font-size: 24px;
+  line-height: 1.05;
+  overflow-wrap: anywhere;
+}
+
+.gesture-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.gesture-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font-weight: 650;
+}
+
 .event-log {
   display: grid;
   gap: 8px;
@@ -456,7 +500,8 @@ dd {
   }
 
   .info-list div,
-  .event-log li {
+  .event-log li,
+  .hmm-result {
     grid-template-columns: 1fr;
   }
 }

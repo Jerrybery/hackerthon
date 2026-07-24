@@ -13,5 +13,9 @@ recordings/*.bin
 recordings/*.wav
 ring_software/recordings/*.bin
 ring_software/recordings/*.wav
+ring_software/hmm_gesture/gestures/
+ring_software/hmm_gesture/models/
+ring_software/hmm_gesture/pretrained_models/pretrained_models/
+ring_software/hmm_gesture/sample_data/sample_data/
 ring_sound_SDK/recordings/*.bin
 ring_sound_SDK/recordings/*.wav

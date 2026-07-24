@@ -12,11 +12,15 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import ring_sound as sdk
+from hmm_gesture.feature_extractor import FeatureExtractor
+from hmm_gesture.recognize import HMMRecognizer
+from hmm_gesture.signal_filter import SignalFilter
 
 
 APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "static"
 RECORDINGS_DIR = APP_DIR / "recordings"
+HMM_MODEL_DIR = APP_DIR / "hmm_gesture" / "pretrained_models"
 RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -83,6 +87,9 @@ class RingRuntime:
         self.connected_at: datetime | None = None
         self.sensor_started = False
         self.sensor_info: sdk.SensorStartInfo | None = None
+        self.hmm_enabled = False
+        self.hmm_recognizer: HMMRecognizer | None = None
+        self.hmm_count = 0
         self._request_lock = asyncio.Lock()
         self._websockets: set[WebSocket] = set()
         self._event_tasks: list[asyncio.Task[None]] = []
@@ -107,6 +114,10 @@ class RingRuntime:
             "connected_at": self.connected_at.isoformat() if connected and self.connected_at else None,
             "sensor_started": self.sensor_started if connected else False,
             "sensor_info": to_payload(self.sensor_info) if connected and self.sensor_info else None,
+            "hmm_enabled": self.hmm_enabled if connected else False,
+            "hmm_available": HMM_MODEL_DIR.exists(),
+            "hmm_models": self._hmm_model_names(),
+            "hmm_count": self.hmm_count if connected else 0,
         }
 
     async def scan(self, request: ScanRequest) -> list[dict[str, Any]]:
@@ -218,6 +229,23 @@ class RingRuntime:
         await self.broadcast("status", self.status())
         return self.status()
 
+    async def start_hmm(self) -> dict[str, Any]:
+        async with self._request_lock:
+            client = self._require_client()
+            self._ensure_hmm_recognizer()
+            if not self.sensor_started:
+                self.sensor_info = await sdk.start_sensor_report(client)
+                self.sensor_started = True
+                self._imu_task = asyncio.create_task(self._imu_loop(client))
+            self.hmm_enabled = True
+        await self.broadcast("status", self.status())
+        return self.status()
+
+    async def stop_hmm(self) -> dict[str, Any]:
+        self.hmm_enabled = False
+        await self.broadcast("status", self.status())
+        return self.status()
+
     async def stop_imu(self) -> dict[str, Any]:
         async with self._request_lock:
             client = self._require_client()
@@ -229,6 +257,7 @@ class RingRuntime:
                 await sdk.stop_sensor_report(client)
             self.sensor_started = False
             self.sensor_info = None
+            self.hmm_enabled = False
         await self.broadcast("status", self.status())
         return self.status()
 
@@ -261,6 +290,8 @@ class RingRuntime:
         self._event_tasks.clear()
         self.sensor_started = False
         self.sensor_info = None
+        self.hmm_enabled = False
+        self.hmm_count = 0
 
         if self.client is not None:
             try:
@@ -304,6 +335,26 @@ class RingRuntime:
         while client is self.client and client.is_connected and self.sensor_started:
             try:
                 batch = await sdk.wait_sensor_data(client, timeout_s=10.0)
+                hmm_samples = [
+                    [sample.accel_x, sample.accel_y, sample.accel_z, sample.gyro_x, sample.gyro_y, sample.gyro_z]
+                    for sample in batch.samples
+                ]
+                if self.hmm_enabled and self.hmm_recognizer:
+                    try:
+                        result = self.hmm_recognizer.feed(hmm_samples)
+                        if result:
+                            name, confidence = result
+                            self.hmm_count += 1
+                            await self.broadcast(
+                                "hmm_gesture",
+                                {
+                                    "name": name,
+                                    "confidence": round(confidence, 3),
+                                    "count": self.hmm_count,
+                                },
+                            )
+                    except Exception as exc:
+                        await self.broadcast("error", {"source": "hmm", "message": str(exc)})
                 samples = batch.samples[-30:]
                 await self.broadcast(
                     "imu",
@@ -322,6 +373,24 @@ class RingRuntime:
                 await self.broadcast("error", {"source": "imu", "message": str(exc)})
                 await self.broadcast("status", self.status())
                 break
+
+    def _ensure_hmm_recognizer(self) -> None:
+        if self.hmm_recognizer is not None:
+            return
+        if not HMM_MODEL_DIR.exists():
+            raise HTTPException(status_code=400, detail=f"HMM 模型目录不存在: {HMM_MODEL_DIR}")
+        self.hmm_recognizer = HMMRecognizer(
+            HMM_MODEL_DIR,
+            SignalFilter(sample_rate=25.0, cutoff_hz=10.0),
+            FeatureExtractor(window_size=8, overlap=4),
+        )
+        if not self.hmm_recognizer._models:
+            raise HTTPException(status_code=400, detail="没有加载到 HMM 预训练模型")
+
+    def _hmm_model_names(self) -> list[str]:
+        if not HMM_MODEL_DIR.exists():
+            return []
+        return sorted(path.stem for path in HMM_MODEL_DIR.glob("*.pkl"))
 
     def _format_gesture(self, event: sdk.SensorGestureEvent) -> dict[str, Any]:
         return {"gesture_name": sdk.sensor_gesture_name(event.gesture_id)}
@@ -391,6 +460,16 @@ async def api_imu_start() -> dict[str, Any]:
 @app.post("/api/imu/stop")
 async def api_imu_stop() -> dict[str, Any]:
     return await guarded(runtime.stop_imu())
+
+
+@app.post("/api/hmm/start")
+async def api_hmm_start() -> dict[str, Any]:
+    return await guarded(runtime.start_hmm())
+
+
+@app.post("/api/hmm/stop")
+async def api_hmm_stop() -> dict[str, Any]:
+    return await guarded(runtime.stop_hmm())
 
 
 @app.websocket("/ws/events")

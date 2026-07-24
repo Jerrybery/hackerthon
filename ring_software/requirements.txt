@@ -2,3 +2,6 @@ fastapi>=0.115
 uvicorn[standard]>=0.30
 bleak>=0.22
 pydantic>=2
+numpy
+scipy
+hmmlearn

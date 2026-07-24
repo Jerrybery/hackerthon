@@ -31,6 +31,11 @@ const refs = {
   imuStop: $("imuStopBtn"),
   imuSubtitle: $("imuSubtitle"),
   canvas: $("imuCanvas"),
+  hmmStart: $("hmmStartBtn"),
+  hmmStop: $("hmmStopBtn"),
+  hmmSubtitle: $("hmmSubtitle"),
+  hmmResult: $("hmmResult"),
+  hmmModels: $("hmmModels"),
   clearLog: $("clearLogBtn"),
   eventLog: $("eventLog"),
 };
@@ -72,6 +77,7 @@ function updateStatus(status) {
   refs.imuSubtitle.textContent = status.sensor_info
     ? `${status.sensor_info.sample_rate_hz}Hz / 加速度 ±${status.sensor_info.accel_range_g}g / 陀螺仪 ±${status.sensor_info.gyro_range_dps}dps`
     : "需要先把戒指切到手势模式";
+  updateHmmStatus(status);
 }
 
 function updateSystemInfo(info) {
@@ -260,6 +266,52 @@ async function stopImu() {
   }
 }
 
+async function startHmm() {
+  setBusy(refs.hmmStart, true, "启动中");
+  try {
+    updateStatus(await api("/api/hmm/start", { method: "POST" }));
+    addLog("HMM", "识别已启动");
+  } catch (error) {
+    addLog("HMM 启动失败", error.message);
+  } finally {
+    setBusy(refs.hmmStart, false, "识别");
+  }
+}
+
+async function stopHmm() {
+  setBusy(refs.hmmStop, true, "暂停中");
+  try {
+    updateStatus(await api("/api/hmm/stop", { method: "POST" }));
+    addLog("HMM", "识别已暂停");
+  } catch (error) {
+    addLog("HMM 暂停失败", error.message);
+  } finally {
+    setBusy(refs.hmmStop, false, "暂停");
+  }
+}
+
+function updateHmmStatus(status) {
+  const models = status.hmm_models || [];
+  refs.hmmSubtitle.textContent = status.hmm_enabled
+    ? `识别中 · ${models.length} 个模型 · ${status.hmm_count || 0} 次`
+    : `${models.length} 个预训练模型`;
+  refs.hmmModels.innerHTML = models.map((name) => `
+    <span class="gesture-pill">${escapeHtml(displayGestureName(name))}</span>
+  `).join("");
+}
+
+function showHmmResult(data) {
+  refs.hmmResult.innerHTML = `
+    <span>最近结果</span>
+    <strong>${escapeHtml(displayGestureName(data.name || "--"))}</strong>
+    <em>置信度 ${Number(data.confidence || 0).toFixed(3)}</em>
+  `;
+}
+
+function displayGestureName(name) {
+  return String(name).replace(/-hmm$/i, "");
+}
+
 function showAudio(result) {
   const bundle = result.bundle;
   refs.audioResult.innerHTML = `
@@ -289,6 +341,9 @@ function receiveRealtime(event) {
     addLog(data.type, data.gesture_name || `timestamp ${data.timestamp_ms}`);
   } else if (event.event === "imu") {
     pushImu(event.data.samples || []);
+  } else if (event.event === "hmm_gesture") {
+    showHmmResult(event.data);
+    addLog("HMM 手势", `${displayGestureName(event.data.name)} · ${Number(event.data.confidence || 0).toFixed(3)}`);
   } else if (event.event === "error") {
     addLog(event.data.source || "错误", event.data.message || "未知错误");
   } else if (event.event === "audio_cleared") {
@@ -364,6 +419,8 @@ async function init() {
   refs.clear.addEventListener("click", clearAudio);
   refs.imuStart.addEventListener("click", startImu);
   refs.imuStop.addEventListener("click", stopImu);
+  refs.hmmStart.addEventListener("click", startHmm);
+  refs.hmmStop.addEventListener("click", stopHmm);
   refs.clearLog.addEventListener("click", () => { refs.eventLog.innerHTML = ""; });
   connectEvents();
   updateStatus(await api("/api/status"));
