@@ -5,3 +5,7 @@ __pycache__/
 .kimi-code/
 key_router.py
 .claude/skills/dimos-dev
+a1z/logs/
+a1z/a1z_alerts.log
+a1z/calibration/data/
+*.egg-info/

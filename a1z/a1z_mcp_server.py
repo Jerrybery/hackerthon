@@ -473,11 +473,13 @@ class A1ZArmModule(Module):
 
     @tool
     def shutdown(self, release_seconds: float = 3.0) -> str:
-        """Graceful exit: ramp stiffness and gravity comp to zero over
-        release_seconds (0.5..10), then disable motors. The arm relaxes
-        slowly instead of dropping instantly — still SUPPORT THE ARM, it
-        ends fully limp. The MCP server stays alive afterwards, but arm
-        control needs a process restart.
+        """Safe exit: move to the ZERO pose (all joints 0 deg) at low speed,
+        then ramp stiffness and gravity comp to zero over release_seconds
+        (0.5..10) and disable motors. The arm never powers down mid-pose —
+        it always parks at zero first, then relaxes slowly instead of
+        dropping instantly. Still SUPPORT THE ARM, it ends fully limp.
+        The MCP server stays alive afterwards, but arm control needs a
+        process restart.
         """
         import time
 
@@ -486,6 +488,8 @@ class A1ZArmModule(Module):
             robot = self._robot
         if robot is None:
             return "already shut down (arm not running)"
+        # Park at the zero pose before releasing anything.
+        robot.move_joints(np.zeros(6), speed=0.2)
         hold_pos = np.array(robot.get_joint_state()["pos"], dtype=float)
         # SDK defaults (arm_robot.py): position-hold gains
         kp0 = np.array([30.0, 30.0, 30.0, 20.0, 5.0, 5.0])
@@ -508,7 +512,7 @@ class A1ZArmModule(Module):
             if self._robot is not None:
                 self._robot.stop()  # motors DISABLE — arm goes limp
                 self._robot = None
-        return "shutdown complete: soft release done, motors disabled"
+        return "shutdown complete: parked at zero pose, soft release done, motors disabled"
 
 
 a1z_mcp = autoconnect(
