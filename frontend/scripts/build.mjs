@@ -22,7 +22,7 @@ if (existsSync(join(root, "public"))) {
   cpSync(join(root, "public"), join(dist, "public"), { recursive: true });
 }
 
-const threeTarget = join(dist, "node_modules/three/build");
+const threeTarget = join(dist, "vendor");
 mkdirSync(threeTarget, { recursive: true });
 cpSync(threeModule, join(threeTarget, "three.module.js"));
 
