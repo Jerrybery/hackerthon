@@ -41,9 +41,9 @@ SCAN_POSE_DEG = [0.0, 60.0, -90.0, 30.0, 0.0, 0.0]
 
 # j1 yaw stops (deg) visited while looking around: single CLOCKWISE pass
 # (viewed from above, j1 decreasing is clockwise), +110 down to -110.
-# Each stop is a future face-detection checkpoint. NOTE: j1 limits are
-# ±120 (240° total travel), so a full 270° sweep is not reachable;
-# ±110 keeps margin off the soft limits.
+# Each stop is a face-detection checkpoint for scan_and_greet. NOTE: j1
+# limits are ±120 (240° total travel), so a full 270° sweep is not
+# reachable; ±110 keeps margin off the soft limits.
 SCAN_YAW_STOPS_DEG = [110.0, 55.0, 0.0, -55.0, -110.0]
 
 # Pause (s) at each yaw stop — gives a camera/detector time to look.
@@ -65,9 +65,8 @@ def _check_within_limits(pose_deg, name: str) -> None:
 def scan_stops(base_pose_deg=SCAN_POSE_DEG, yaws_deg=SCAN_YAW_STOPS_DEG):
     """Yield each look-around stop pose (base pose with j1 set to the yaw).
 
-    Pattern for a future face-detection loop:
-        for stop in scan_stops():
-            move_joints(stop); check camera; break when a face is centered.
+    Used by scan_and_greet: move to each stop, check the face-detection
+    service, nod and break when a face is centered in the frame.
     """
     _check_within_limits(base_pose_deg, "base_pose")
     for yaw in yaws_deg:

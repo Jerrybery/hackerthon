@@ -20,6 +20,9 @@ CONF_TH = 0.4
 NMS_TH = 0.45
 CAM = '/dev/video0'
 CAP_W, CAP_H = 1280, 720
+# A face counts as "at frame center" when its center-x is within this
+# fraction of the frame width around the middle (0.25 -> central half).
+CENTER_BAND = 0.25
 
 STRIDES = [8, 16, 32]
 ANCHORS = [
@@ -89,6 +92,7 @@ class Detector:
         self.frame = None          # latest raw frame
         self.jpg = None            # latest annotated jpeg
         self.stats = {'infer_ms': 0, 'fps': 0, 'faces': 0}
+        self.face_info = {'ts': 0, 'width': CAP_W, 'height': CAP_H, 'faces': []}
         self.stop = False
 
     def grab_loop(self):
@@ -123,10 +127,16 @@ class Detector:
             tlbr = [[b[0] - b[2] / 2, b[1] - b[3] / 2, b[2], b[3]] for b in boxes[m]]
             idx = cv2.dnn.NMSBoxes(tlbr, conf[m].tolist(), CONF_TH, NMS_TH)
             dets = np.array(idx).ravel() if len(idx) else []
+            faces = []
             for i in dets:
                 x0, y0, w, h = tlbr[i]
                 p0 = (int((x0 - dw) / r), int((y0 - dh) / r))
                 p1 = (int((x0 + w - dw) / r), int((y0 + h - dh) / r))
+                cx = (p0[0] + p1[0]) / 2
+                faces.append({'x0': p0[0], 'y0': p0[1], 'x1': p1[0], 'y1': p1[1],
+                              'conf': round(float(conf[m][i]), 3),
+                              'cx': round(cx, 1),
+                              'centered': abs(cx - w0 / 2) <= w0 * CENTER_BAND})
                 cv2.rectangle(f, p0, p1, (0, 255, 0), 2)
                 cv2.putText(f, f'{conf[m][i]:.2f}', (p0[0], max(p0[1] - 4, 14)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
@@ -140,6 +150,8 @@ class Detector:
                     self.jpg = jpg.tobytes()
                     self.stats = {'infer_ms': round(infer_ms, 1),
                                   'fps': round(fps_ema, 1), 'faces': len(dets)}
+                    self.face_info = {'ts': time.time(), 'width': w0, 'height': h0,
+                                      'faces': faces}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -158,6 +170,14 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif self.path == '/stats':
             body = json.dumps(self.det.stats).encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.path == '/faces':
+            with self.det.lock:
+                body = json.dumps(self.det.face_info).encode()
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(body)))

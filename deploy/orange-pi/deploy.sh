@@ -17,7 +17,7 @@ for host in "$@"; do
   rsync -az \
     "$ROOT/a1z/a1z_mcp_server.py" "$ROOT/a1z/a1z_mac.py" "$ROOT/a1z/mcp_call.py" \
     "$ROOT/a1z/vision_grasp.py" "$ROOT/a1z/live_view.py" "$ROOT/a1z/grasp_servo.py" \
-    "$ROOT/a1z/jog.py" "$ROOT/a1z/hold_neutral.py" \
+    "$ROOT/a1z/jog.py" "$ROOT/a1z/hold_neutral.py" "$ROOT/a1z/motions.py" \
     "$host:~/dimos-mcp/a1z/"
   rsync -az \
     "$ROOT/a1z/calibration/camera_intrinsics.yaml" "$ROOT/a1z/calibration/handeye_result.yaml" \

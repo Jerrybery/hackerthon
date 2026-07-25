@@ -132,10 +132,15 @@ class A1ZArmModule(Module):
         print(f"[a1z] start() in pid={os.getpid()}", flush=True)
         self._bus = EchoFilterBus(open_bus())
         gr.can.interface.Bus = lambda **kw: self._bus
+        # Slow hosts (e.g. Orange Pi) can't sustain 250 Hz: lower the target
+        # and the estop floor via env. Defaults keep workstation behavior.
+        control_freq = int(os.environ.get("A1Z_CONTROL_FREQ_HZ", "250"))
+        min_freq = float(os.environ.get("A1Z_MIN_FREQ_HZ", "80.0"))
         self._robot = gr.get_a1z_robot(
             gravity_comp_factor=1.0,
             zero_gravity_mode=False,
-            control_freq_hz=250,
+            control_freq_hz=control_freq,
+            min_freq_hz=min_freq,
             with_gripper=True,
         )
         self._robot.start()  # locks current pose immediately (gripper homes open)
@@ -205,29 +210,6 @@ class A1ZArmModule(Module):
         robot.move_joints(np.deg2rad(np.array(pose_deg, dtype=float)), speed=speed)
 
     @tool
-    def look_around(self, speed: float = 0.3) -> str:
-        """Stand up into the raised alert pose and look around: sweep the
-        base (j1) through the preset yaw stops, pausing briefly at each
-        one, then return to facing forward.
-
-        Each yaw stop is a future face-detection checkpoint; poses come
-        from motions.py (SCAN_POSE_DEG / SCAN_YAW_STOPS_DEG).
-        speed: max joint speed rad/s, capped at 0.5.
-        """
-        import time
-
-        robot = self._get_robot()
-        if robot is None:
-            return "ERROR: arm not running (estopped or not started)"
-        speed = min(max(speed, 0.05), MAX_SPEED)
-        self._move_deg(robot, motions.SCAN_POSE_DEG, speed)
-        for stop in motions.scan_stops():
-            self._move_deg(robot, stop, speed)
-            time.sleep(motions.SCAN_DWELL_S)
-        self._move_deg(robot, motions.SCAN_POSE_DEG, speed)  # face forward again
-        return f"look around done (yaw stops {motions.SCAN_YAW_STOPS_DEG} deg)"
-
-    @tool
     def nod_greet(self, speed: float = 0.3) -> str:
         """Greeting gesture: move to the raised alert pose and nod the
         wrist (j4) NOD_TIMES times, ending back at the alert pose.
@@ -246,22 +228,66 @@ class A1ZArmModule(Module):
 
     @tool
     def scan_and_greet(self, speed: float = 0.3) -> str:
-        """Combined social behavior: look around (alert pose + j1 sweep
-        through the yaw stops), then nod a greeting. Returns a trigger
-        string for the agent to start a conversation.
+        """Find a person and greet them: raise into the alert pose, sweep
+        the base (j1) through the yaw stops, and at each stop check the
+        wrist-camera face-detection service. When a face is detected at
+        the CENTER of the frame, stop sweeping and nod at that spot
+        (facing the person). Returns a trigger string for the agent to
+        start a conversation. If no centered face is found on the whole
+        sweep, returns to facing forward and reports that.
 
-        NOTE: no face detection yet — this always plays the full sweep
-        then greets. Once the face service is wired in, the sweep will
-        stop early on a centered face and only then greet.
+        Requires the face-detection service (face_detect/server.py) to be
+        running on this host (FACE_SERVICE_URL, default
+        http://127.0.0.1:8095/faces).
         speed: max joint speed rad/s, capped at 0.5.
         """
-        st = self.look_around(speed=speed)
-        if st.startswith("ERROR"):
-            return st
-        st = self.nod_greet(speed=speed)
-        if st.startswith("ERROR"):
-            return "look around done but greeting failed: " + st
-        return "human in sight, start a chat"
+        import time
+
+        robot = self._get_robot()
+        if robot is None:
+            return "ERROR: arm not running (estopped or not started)"
+        speed = min(max(speed, 0.05), MAX_SPEED)
+        self._move_deg(robot, motions.SCAN_POSE_DEG, speed)
+        for stop in motions.scan_stops():
+            self._move_deg(robot, stop, speed)
+            time.sleep(motions.SCAN_DWELL_S)  # let the view settle
+            hit = self._centered_face()
+            if hit == "DOWN":
+                self._move_deg(robot, motions.SCAN_POSE_DEG, speed)
+                return ("ERROR: face-detection service unreachable or stale "
+                        "(start face_detect/server.py on this host first)")
+            if hit is None:
+                continue
+            # nod facing the person (current yaw), not the forward pose
+            for pose in motions.nod_poses(base_pose_deg=stop):
+                self._move_deg(robot, pose, speed)
+            return (f"human in sight at j1={stop[0]:.0f} deg "
+                    f"(face conf {hit['conf']}), start a chat")
+        self._move_deg(robot, motions.SCAN_POSE_DEG, speed)  # face forward again
+        return "no person found after full sweep, facing forward again"
+
+    @staticmethod
+    def _centered_face():
+        """Query the face-detection service; return the best centered face
+        (dict) or None. Returns the string 'DOWN' if the service is
+        unreachable or its data is stale."""
+        import json
+        import os
+        import time
+        import urllib.request
+
+        url = os.environ.get("FACE_SERVICE_URL", "http://127.0.0.1:8095/faces")
+        try:
+            with urllib.request.urlopen(url, timeout=1.0) as resp:
+                info = json.loads(resp.read())
+        except Exception:
+            return "DOWN"
+        if time.time() - info.get("ts", 0) > 2.0:
+            return "DOWN"  # stale detections (camera/detector stalled)
+        centered = [f for f in info.get("faces", []) if f.get("centered")]
+        if not centered:
+            return None
+        return max(centered, key=lambda f: f["conf"])
 
     def _goto_tcp(self, x: float, y: float, z: float,
                   roll_deg: float, pitch_deg: float, yaw_deg: float,
