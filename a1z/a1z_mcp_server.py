@@ -823,6 +823,13 @@ class A1ZArmModule(Module):
                          lift: float = 0.15, speed: float = 0.2) -> str:
         """Side-clamp a bottle-like object horizontally and lift it.
 
+        VERIFICATION REQUIRED: call capture_scene BEFORE starting the grasp
+        to visually confirm the target object and its position, and call
+        capture_scene AGAIN right after the sequence to verify the object is
+        actually held in the gripper. If the post-grasp photo shows a miss or
+        a bad grip, say so — never claim a successful grasp without the
+        post-grasp photo.
+
         Reads the RED annotation mark in image_path (a frame from
         capture_wrist_view) — mark the object's BASE contact point on the
         table — back-projects it onto the tabletop plane, then runs:
@@ -926,6 +933,11 @@ class A1ZArmModule(Module):
         dropping instantly. Still SUPPORT THE ARM, it ends fully limp.
         The MCP server stays alive afterwards, but arm control needs a
         process restart.
+
+        IMPORTANT: whenever the user asks to return to the zero pose / home /
+        safe position (回零位、回到安全位置、归位、停车), CALL THIS TOOL —
+        parking at zero with a soft release IS the safe position. Do not
+        improvise a manual move_to_pose to zero instead.
         """
         import time
 
