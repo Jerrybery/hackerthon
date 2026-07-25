@@ -11,9 +11,15 @@
 # ModuleCoordinator works without the route; add it via sudo later if
 # cross-process LCM is needed:
 #   sudo ip route add 224.0.0.0/4 dev lo
+#
+# A1Z_MIN_FREQ_HZ: the arm watchdog estops when the control loop drops
+# below this for 6 s. On the Orange Pi 3B the CAN round-trip keeps the
+# loop at ~70-75 Hz even on dedicated cores, so the 80 Hz default
+# false-triggers; 60 Hz still catches a genuinely stalled loop.
 set -euo pipefail
 cd "$(dirname "$0")/a1z"
 PYTEST_VERSION=1 DIMOS_TRANSPORT=lcm \
 LISTEN_HOST="${LISTEN_HOST:-127.0.0.1}" \
 MCP_PORT="${MCP_PORT:-9990}" \
+A1Z_MIN_FREQ_HZ="${A1Z_MIN_FREQ_HZ:-60}" \
   ../.venv/bin/python a1z_mcp_server.py
