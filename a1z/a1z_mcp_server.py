@@ -18,6 +18,7 @@ import threading
 from pathlib import Path
 
 import numpy as np
+import pinocchio as pin  # top-level so forkserver preloads it before workers fork
 
 A1Z_DIR = Path(__file__).parent
 SKILL_SCRIPTS = Path.home() / "projects/hackerthon/.claude/skills/dimos-connection-setup-macos/scripts"
@@ -45,6 +46,10 @@ JOINT_LIMITS_DEG = [
     (-115.0, 115.0),
 ]
 MAX_SPEED = 0.5  # rad/s, hard cap for MCP-triggered moves
+# Per-call joint step for streamed teleop targets (gamepad_teleop). At the
+# ~12.5 Hz teleop rate 0.05 rad ≈ 2.9°/call ≈ 36°/s worst case; the
+# position-hold PD tracks steps this size within one tick.
+TELEOP_JOINT_STEP_RAD = 0.05
 
 URDF_PATH = A1Z_DIR / "GALAXEA-A1Z" / "a1z" / "robot_models" / "a1z" / "A1Z_Flange.urdf"
 EE_FRAME = "arm_link6"
@@ -56,6 +61,31 @@ MIN_Z_M = 0.02
 MAX_Z_M = 0.60
 
 
+class ScenePhoto:
+    """Picklable MCP tool result: a text block plus one MCP-standard image
+    content block ({"type": "image", "data": <b64>, "mimeType": ...}), so a
+    vision-capable agent receives the actual camera frame, not just a path.
+
+    Defined at module top level on purpose: dimos RPC pickles tool results
+    into the McpServer worker, and forkserver workers re-import this script,
+    making the class importable there. McpServer forwards agent_encode()
+    verbatim as the MCP content list.
+    """
+
+    def __init__(self, text: str, jpeg_b64: str):
+        self.text = text
+        self.jpeg_b64 = jpeg_b64
+
+    def agent_encode(self) -> list[dict]:
+        return [
+            {"type": "text", "text": self.text},
+            {"type": "image", "data": self.jpeg_b64, "mimeType": "image/jpeg"},
+        ]
+
+    def __str__(self) -> str:  # used by McpServer's log line
+        return self.text
+
+
 class _IKSolver:
     """Damped-least-squares IK on the arm_link6 frame (Pinocchio direct).
 
@@ -65,8 +95,6 @@ class _IKSolver:
     """
 
     def __init__(self, urdf_path: str, ee_frame: str = EE_FRAME):
-        import pinocchio as pin
-
         self._pin = pin
         self._model = pin.buildModelFromUrdf(urdf_path)
         self._data = self._model.createData()
@@ -123,6 +151,104 @@ class A1ZArmModule(Module):
     _bus = None
     _kin = None
     _lock = threading.Lock()
+    # Who may move the arm: "ai" (agent tools) or "gamepad" (DualSense
+    # teleop bridge via gamepad_teleop). Motion commands from the inactive
+    # side are rejected; estop/shutdown/read-only tools always work.
+    _control_mode = "ai"
+    _mode_lock = threading.Lock()
+    _mode_httpd = None
+    # Teleop virtual reference pose (base-frame TCP xyz + extrinsic XYZ rpy,
+    # deg). Deltas accumulate HERE, not on the FK feedback readback — reading
+    # back a mid-motion pose would ratchet transient errors into steady drift.
+    # Reset on mode switch to gamepad or after >1s of teleop silence.
+    _teleop_ref = None
+    _teleop_last_t = 0.0
+    # Server-side teleop rate limit: FK+IK runs in this worker process and
+    # shares the GIL with the CAN control loop (steady-state only 52-75 Hz
+    # on the Orange Pi), so teleop above ~12 Hz repeatedly pushed the loop
+    # under the watchdog floor. Dropped packets lose their delta — the
+    # bridge integrates with measured dt, so this only caps speed.
+    _teleop_last_call = 0.0
+    _TELEOP_MIN_INTERVAL_S = 0.08
+
+    @classmethod
+    def _get_mode(cls) -> str:
+        with cls._mode_lock:
+            return cls._control_mode
+
+    @classmethod
+    def _set_mode(cls, mode: str) -> str:
+        with cls._mode_lock:
+            cls._control_mode = mode
+            if mode == "gamepad":
+                cls._teleop_ref = None  # re-anchor on first teleop packet
+        print(f"[a1z] control mode -> {mode}", flush=True)
+        return mode
+
+    def _gate(self) -> str | None:
+        """Reject AI-side motion commands while the gamepad owns the arm."""
+        if self._get_mode() == "gamepad":
+            return ("REJECTED: control mode is 'gamepad' (handheld controller "
+                    "owns the arm). Use set_control_mode('ai') to take it back.")
+        return None
+
+    def _start_mode_http(self) -> None:
+        """Tiny stdlib HTTP switch for the control mode (default :9991).
+
+        GET  /mode           -> {"mode": "ai"|"gamepad"}
+        POST /mode           -> toggle (empty body) or set {"mode": ...}
+        Runs in this module's worker process, sharing _control_mode with the
+        MCP tools. Bound to 0.0.0.0 so external devices can flip the switch.
+        """
+        import json as _json
+        import os
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        module_cls = type(self)
+
+        class ModeHandler(BaseHTTPRequestHandler):
+            def _reply(self, obj, code: int = 200) -> None:
+                body = _json.dumps(obj).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self) -> None:
+                if self.path.rstrip("/") in ("", "/mode"):
+                    self._reply({"mode": module_cls._get_mode()})
+                else:
+                    self._reply({"error": "not found"}, 404)
+
+            def do_POST(self) -> None:
+                if self.path.rstrip("/") != "/mode":
+                    self._reply({"error": "not found"}, 404)
+                    return
+                length = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(length) if length else b""
+                mode = None
+                if raw:
+                    try:
+                        mode = _json.loads(raw).get("mode")
+                    except Exception:
+                        self._reply({"error": "bad json"}, 400)
+                        return
+                if mode is None:  # empty body = toggle
+                    mode = "gamepad" if module_cls._get_mode() == "ai" else "ai"
+                if mode not in ("ai", "gamepad"):
+                    self._reply({"error": "mode must be 'ai' or 'gamepad'"}, 400)
+                    return
+                self._reply({"mode": module_cls._set_mode(mode)})
+
+            def log_message(self, *args) -> None:  # keep stdout clean
+                pass
+
+        port = int(os.environ.get("A1Z_MODE_HTTP_PORT", "9991"))
+        httpd = ThreadingHTTPServer(("0.0.0.0", port), ModeHandler)
+        module_cls._mode_httpd = httpd
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        print(f"[a1z] control-mode HTTP switch on :{port} (/mode)", flush=True)
 
     @rpc
     def start(self) -> None:
@@ -130,24 +256,76 @@ class A1ZArmModule(Module):
         import os
 
         print(f"[a1z] start() in pid={os.getpid()}", flush=True)
+        # Import pinocchio + parse the URDF BEFORE starting the control loop:
+        # on slow hosts (Orange Pi) this takes seconds and the GIL would
+        # starve the running loop into a watchdog estop.
+        self._kin = _IKSolver(str(URDF_PATH), EE_FRAME)
         self._bus = EchoFilterBus(open_bus())
         gr.can.interface.Bus = lambda **kw: self._bus
         # Slow hosts (e.g. Orange Pi) can't sustain 250 Hz: lower the target
         # and the estop floor via env. Defaults keep workstation behavior.
         control_freq = int(os.environ.get("A1Z_CONTROL_FREQ_HZ", "250"))
         min_freq = float(os.environ.get("A1Z_MIN_FREQ_HZ", "80.0"))
+        # Startup (gripper homing, CAN warm-up) transiently drags the loop
+        # below the watchdog floor for its first ~6s, so begin with a low
+        # startup floor and raise it to the real one once the loop settles.
+        startup_freq = float(os.environ.get("A1Z_MIN_FREQ_STARTUP_HZ", "10.0"))
         self._robot = gr.get_a1z_robot(
             gravity_comp_factor=1.0,
             zero_gravity_mode=False,
             control_freq_hz=control_freq,
-            min_freq_hz=min_freq,
+            min_freq_hz=min(startup_freq, min_freq),
             with_gripper=True,
         )
         self._robot.start()  # locks current pose immediately (gripper homes open)
-        self._kin = _IKSolver(str(URDF_PATH), EE_FRAME)
+        # Startup CAN/USB transients (gripper homing, bus warm-up) can hold
+        # feedback past the 200 ms stale estop — observed a 203 ms estop 1-2 s
+        # after start on the Orange Pi (2026-07-25). Begin with a relaxed
+        # stale limit and tighten it once the loop settles, same pattern as
+        # the watchdog frequency floor.
+        stale_estop = float(os.environ.get("A1Z_STALE_ESTOP_S", "0.2"))
+        startup_stale = float(os.environ.get("A1Z_STALE_ESTOP_STARTUP_S", "1.0"))
+        self._robot._stale_estop_s = max(startup_stale, stale_estop)
+        self._raise_watchdog_later(min_freq)
+        self._tighten_stale_later(stale_estop)
+        self._start_mode_http()
+
+    def _tighten_stale_later(self, stale_estop: float, delay: float = 30.0) -> None:
+        """Restore the CAN-stale estop limit after the startup transient."""
+
+        def _tighten() -> None:
+            import time
+
+            time.sleep(delay)
+            robot = self._robot
+            if robot is not None and robot.is_running:
+                robot._stale_estop_s = stale_estop
+                print(
+                    f"[a1z] CAN stale estop limit tightened to {stale_estop * 1000:.0f} ms",
+                    flush=True,
+                )
+
+        threading.Thread(target=_tighten, daemon=True).start()
+
+    def _raise_watchdog_later(self, min_freq: float, delay: float = 30.0) -> None:
+        """Raise the estop frequency floor to min_freq after the loop settles."""
+
+        def _raise() -> None:
+            import time
+
+            time.sleep(delay)
+            robot = self._robot
+            if robot is not None and robot.is_running:
+                robot._min_freq_hz = min_freq
+                print(f"[a1z] watchdog floor raised to {min_freq} Hz", flush=True)
+
+        threading.Thread(target=_raise, daemon=True).start()
 
     @rpc
     def stop(self) -> None:
+        if type(self)._mode_httpd is not None:
+            type(self)._mode_httpd.shutdown()
+            type(self)._mode_httpd = None
         with self._lock:
             if self._robot is not None:
                 self._robot.stop()  # motors DISABLE — arm goes limp
@@ -193,6 +371,9 @@ class A1ZArmModule(Module):
         (j1 ±120, j2 0..180, j3 -180..0, j4/j5 ±85, j6 ±115).
         speed: max joint speed rad/s, capped at 0.5.
         """
+        gated = self._gate()
+        if gated:
+            return gated
         if len(joints_deg) != 6:
             return "ERROR: need exactly 6 joint angles"
         err = self._check_limits(joints_deg)
@@ -217,6 +398,9 @@ class A1ZArmModule(Module):
         Poses come from motions.py (SCAN_POSE_DEG / NOD_DIP_DEG / NOD_TIMES).
         speed: max joint speed rad/s, capped at 0.5.
         """
+        gated = self._gate()
+        if gated:
+            return gated
         robot = self._get_robot()
         if robot is None:
             return "ERROR: arm not running (estopped or not started)"
@@ -243,6 +427,9 @@ class A1ZArmModule(Module):
         """
         import time
 
+        gated = self._gate()
+        if gated:
+            return gated
         robot = self._get_robot()
         if robot is None:
             return "ERROR: arm not running (estopped or not started)"
@@ -289,10 +476,64 @@ class A1ZArmModule(Module):
             return None
         return max(centered, key=lambda f: f["conf"])
 
+    @tool
+    def capture_scene(self) -> "str | ScenePhoto":
+        """Take a photo of what the wrist camera is looking at RIGHT NOW.
+
+        The robot has no other way to see: CALL THIS FIRST before any robot
+        action (move_to_pose, move_to_tcp, grasp_horizontal, set_gripper,
+        scan_and_greet, nod_greet) and whenever the current situation is
+        uncertain, so every decision is grounded in the actual scene rather
+        than assumptions. The photo is returned as an image you can SEE —
+        always look at it before acting; only forward it to the user when
+        they ask to see it. Also reports the face detector's current
+        readings (bbox, confidence, centered) when faces are visible.
+
+        Requires the face-detection service (face_detect/server.py) to be
+        running on this host (FACE_SERVICE_URL, default
+        http://127.0.0.1:8095/faces). Works even when the arm is estopped.
+        """
+        import base64
+        import json
+        import os
+        import urllib.request
+
+        faces_url = os.environ.get("FACE_SERVICE_URL", "http://127.0.0.1:8095/faces")
+        snap_url = faces_url.rsplit("/", 1)[0] + "/snapshot.jpg"
+        try:
+            with urllib.request.urlopen(snap_url, timeout=2.0) as resp:
+                jpeg = resp.read()
+        except Exception as e:
+            return (f"ERROR: camera frame unavailable from {snap_url} ({e}); "
+                    "is face_detect/server.py running on this host?")
+        # Best-effort face summary; the photo alone is still useful without it.
+        try:
+            with urllib.request.urlopen(faces_url, timeout=1.0) as resp:
+                info = json.loads(resp.read())
+            faces = info.get("faces", [])
+        except Exception:
+            faces = []
+        if faces:
+            parts = [f"conf {f['conf']} cx={f['cx']}"
+                     + (" CENTERED" if f.get("centered") else "") for f in faces]
+            face_text = f"{len(faces)} face(s) visible: " + "; ".join(parts)
+        else:
+            face_text = "no faces detected"
+        text = ("Scene photo captured from the wrist camera just now — it is "
+                "attached as an image; LOOK at it before any robot action. "
+                f"Face detector: {face_text}.")
+        return ScenePhoto(text, base64.b64encode(jpeg).decode("ascii"))
+
     def _goto_tcp(self, x: float, y: float, z: float,
                   roll_deg: float, pitch_deg: float, yaw_deg: float,
-                  speed: float) -> str:
-        """Shared implementation for move_to_tcp and the compound skills."""
+                  speed: float, teleop: bool = False) -> str:
+        """Shared implementation for move_to_tcp and the compound skills.
+
+        teleop=True (gamepad_teleop): tiny increments only, so solve IK
+        locally from the current joints with one seed and few iterations —
+        the full 6-seed x 800-iter search would starve the control loop
+        when called at teleop rates.
+        """
         robot = self._get_robot()
         if robot is None:
             return "ERROR: arm not running (estopped or not started)"
@@ -300,8 +541,6 @@ class A1ZArmModule(Module):
             return f"ERROR: reach {math.hypot(x, y):.3f}m > {MAX_REACH_M}m"
         if not MIN_Z_M <= z <= MAX_Z_M:
             return f"ERROR: z={z} outside [{MIN_Z_M}, {MAX_Z_M}]"
-        import pinocchio as pin
-
         R = pin.rpy.rpyToMatrix(np.deg2rad(np.array([roll_deg, pitch_deg, yaw_deg])))
         T_tcp = np.eye(4)
         T_tcp[:3, :3] = R
@@ -311,6 +550,24 @@ class A1ZArmModule(Module):
         T_target = T_tcp @ np.linalg.inv(T_link6_tcp)
 
         q_cur = np.asarray(robot.get_joint_state()["pos"])
+        if teleop:
+            # Blocking min-jerk move to the (virtual-ref) target with a
+            # converged hot-start IK solve. This is the conservative,
+            # known-good execution path: slower (~2-4 Hz) but correct.
+            # (Non-blocking command_joint_state streaming and single-step
+            # resolved-rate control were both tried and reverted 2026-07-25.)
+            pos_err, ang_err, q_sol = self._kin.ik(
+                T_target, [q_cur], w_rot=1.0, max_iters=30, dt=0.5)
+            if pos_err > 0.02 or ang_err > 10.0:
+                return (f"ERROR: teleop IK no converge ({pos_err * 1000:.1f}mm / "
+                        f"{ang_err:.1f}deg), holding pose")
+            speed = min(max(speed, 0.05), MAX_SPEED)
+            try:
+                robot.move_joints(q_sol, speed=speed, max_jump_rad=0.6)
+            except ValueError as e:
+                return f"ERROR: teleop move rejected: {e}"
+            return (f"teleop tcp=({x:.3f}, {y:.3f}, {z:.3f}) "
+                    f"rpy=({roll_deg:.1f}, {pitch_deg:.1f}, {yaw_deg:.1f})")
         seeds = [q_cur,
                  np.deg2rad([yaw_deg, 90, -90, 0, 0, 0.0]),
                  np.deg2rad([yaw_deg, 60, -60, 0, 0, 0.0]),
@@ -338,6 +595,9 @@ class A1ZArmModule(Module):
         pointing straight down).
         speed: max joint speed rad/s, capped at 0.5.
         """
+        gated = self._gate()
+        if gated:
+            return gated
         return self._goto_tcp(x, y, z, roll_deg, pitch_deg, yaw_deg, speed)
 
     @tool
@@ -345,6 +605,9 @@ class A1ZArmModule(Module):
         """Set gripper position: 0.0 = fully closed, 1.0 = fully open.
         Force-limited hybrid mode: closes until the object resists, then holds
         without crushing."""
+        gated = self._gate()
+        if gated:
+            return gated
         robot = self._get_robot()
         if robot is None:
             return "ERROR: arm not running"
@@ -353,6 +616,160 @@ class A1ZArmModule(Module):
         value = min(max(value, 0.0), 1.0)
         robot.command_gripper(value)
         return f"gripper -> {value}"
+
+    @tool
+    def set_control_mode(self, mode: str) -> str:
+        """Switch who may move the arm: "ai" (agent motion tools) or
+        "gamepad" (DualSense teleop bridge via gamepad_teleop). Motion
+        commands from the non-active side are rejected. estop, shutdown and
+        read-only tools always work regardless of mode."""
+        mode = mode.strip().lower()
+        if mode not in ("ai", "gamepad"):
+            return f"ERROR: mode must be 'ai' or 'gamepad', got {mode!r}"
+        return f"control mode -> {self._set_mode(mode)}"
+
+    @tool
+    def get_tcp_pose(self) -> str:
+        """Return the current TCP pose (FK from live joints): position (m)
+        and extrinsic X-Y-Z RPY (deg) in the base frame. Read-only, works in
+        any control mode."""
+        robot = self._get_robot()
+        if robot is None:
+            return "ERROR: arm not running"
+        q = np.asarray(robot.get_joint_state()["pos"])
+        T_link6 = self._kin.fk(q)
+        T_link6_tcp = np.eye(4)
+        T_link6_tcp[:3, 3] = TCP_OFFSET_M
+        T_tcp = T_link6 @ T_link6_tcp
+        rpy = np.rad2deg(pin.rpy.matrixToRpy(T_tcp[:3, :3]))
+        pos = T_tcp[:3, 3]
+        return (f"tcp xyz(m)=({pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f}) "
+                f"rpy(deg)=({rpy[0]:.2f}, {rpy[1]:.2f}, {rpy[2]:.2f})")
+
+    @tool
+    def get_control_mode(self) -> str:
+        """Return the current control mode: "ai" or "gamepad"."""
+        return self._get_mode()
+
+    @tool
+    def gamepad_teleop(self, dx: float = 0.0, dy: float = 0.0, dz: float = 0.0,
+                       droll_deg: float = 0.0, dpitch_deg: float = 0.0,
+                       dyaw_deg: float = 0.0, gripper: float | None = None,
+                       speed: float = 0.5,
+                       abs_roll_deg: float | None = None,
+                       abs_pitch_deg: float | None = None,
+                       abs_yaw_deg: float | None = None) -> str:
+        """DualSense teleop entry: apply a SMALL increment to the current TCP
+        pose. Only accepted while control mode is "gamepad" (see
+        set_control_mode); otherwise rejected so a misbehaving bridge cannot
+        fight the AI. Increments are hard-clamped (|dpos| <= 0.05 m per axis,
+        |dang| <= 10 deg per axis) so a corrupt packet cannot cause a jump.
+        Position deltas are in the base frame (m), angle deltas are added to
+        the current extrinsic X-Y-Z RPY (deg). gripper: optional 0..1 target.
+
+        Absolute-attitude mode: if ALL of abs_roll/pitch/yaw_deg are given,
+        the virtual reference orientation is SET to those values instead of
+        accumulating droll/dpitch/dyaw — immune to dropped packets.
+        """
+        if self._get_mode() != "gamepad":
+            return ("REJECTED: control mode is 'ai' (agent owns the arm). "
+                    "Use set_control_mode('gamepad') to hand it over.")
+        robot = self._get_robot()
+        if robot is None:
+            return "ERROR: arm not running (estopped or not started)"
+
+        def _clamp(v: float, m: float) -> float:
+            return max(-m, min(m, float(v)))
+
+        dx, dy, dz = (_clamp(v, 0.05) for v in (dx, dy, dz))
+        droll_deg, dpitch_deg, dyaw_deg = (
+            _clamp(v, 10.0) for v in (droll_deg, dpitch_deg, dyaw_deg))
+        abs_mode = (abs_roll_deg is not None and abs_pitch_deg is not None
+                    and abs_yaw_deg is not None)
+
+        gripper_txt = ""
+        if gripper is not None:
+            if robot.gripper is None:
+                return "ERROR: no gripper attached"
+            robot.command_gripper(min(max(float(gripper), 0.0), 1.0))
+            gripper_txt = f" gripper->{min(max(float(gripper), 0.0), 1.0)}"
+
+        if not abs_mode and not any((dx, dy, dz, droll_deg, dpitch_deg, dyaw_deg)):
+            return "held (zero delta)" + gripper_txt
+
+        import time
+
+        now = time.time()
+        if now - type(self)._teleop_last_call < type(self)._TELEOP_MIN_INTERVAL_S:
+            return "held (rate limited)" + gripper_txt
+        type(self)._teleop_last_call = now
+        ref = type(self)._teleop_ref
+        if ref is None or now - type(self)._teleop_last_t > 1.0:
+            # (re)anchor the virtual reference on the actual pose
+            q = np.asarray(robot.get_joint_state()["pos"])
+            T_link6 = self._kin.fk(q)
+            T_link6_tcp = np.eye(4)
+            T_link6_tcp[:3, 3] = TCP_OFFSET_M
+            T_tcp = T_link6 @ T_link6_tcp
+            ref = {"pos": T_tcp[:3, 3].copy(),
+                   "rpy": np.rad2deg(pin.rpy.matrixToRpy(T_tcp[:3, :3]))}
+        ref["pos"] = ref["pos"] + np.array([dx, dy, dz])
+        # clamp the virtual reference INTO the workspace: deltas accumulate
+        # even when the arm cannot follow (or a move errors), so without this
+        # the ref can run out of bounds and every later call fails the
+        # _goto_tcp guards — wedging teleop until a re-anchor (seen 2026-07-25:
+        # z wound down to -0.62 m while the user held z-down).
+        ref["pos"][2] = min(max(ref["pos"][2], MIN_Z_M + 0.01), MAX_Z_M - 0.02)
+        r_xy = math.hypot(ref["pos"][0], ref["pos"][1])
+        if r_xy > MAX_REACH_M - 0.05:
+            s = (MAX_REACH_M - 0.05) / r_xy
+            ref["pos"][0] *= s
+            ref["pos"][1] *= s
+        if abs_mode:
+            ref["rpy"] = np.array([abs_roll_deg, abs_pitch_deg, abs_yaw_deg],
+                                  dtype=float)
+        else:
+            ref["rpy"] = ref["rpy"] + np.array([droll_deg, dpitch_deg, dyaw_deg])
+        type(self)._teleop_ref = ref
+        type(self)._teleop_last_t = now
+        result = self._goto_tcp(
+            float(ref["pos"][0]), float(ref["pos"][1]), float(ref["pos"][2]),
+            float(ref["rpy"][0]), float(ref["rpy"][1]), float(ref["rpy"][2]),
+            speed, teleop=True)
+        return result + gripper_txt
+
+    @tool
+    def teleop_level(self, speed: float = 0.3) -> str:
+        """One-touch home for teleop: level the TCP (roll=0, pitch=0, keep
+        current yaw and position), then re-anchor the virtual reference to
+        the leveled pose. Only accepted in gamepad mode. The bridge binds
+        this to the touchpad button and re-zeros its own attitude anchor
+        at the same time."""
+        if self._get_mode() != "gamepad":
+            return ("REJECTED: control mode is 'ai' (agent owns the arm). "
+                    "Use set_control_mode('gamepad') to hand it over.")
+        robot = self._get_robot()
+        if robot is None:
+            return "ERROR: arm not running (estopped or not started)"
+        import time
+
+        q = np.asarray(robot.get_joint_state()["pos"])
+        T_link6 = self._kin.fk(q)
+        T_link6_tcp = np.eye(4)
+        T_link6_tcp[:3, 3] = TCP_OFFSET_M
+        T_tcp = T_link6 @ T_link6_tcp
+        pos = T_tcp[:3, 3]
+        yaw = float(np.rad2deg(pin.rpy.matrixToRpy(T_tcp[:3, :3]))[2])
+        result = self._goto_tcp(float(pos[0]), float(pos[1]), float(pos[2]),
+                                0.0, 0.0, yaw, speed, teleop=True)
+        if not result.startswith("ERROR"):
+            type(self)._teleop_ref = {
+                "pos": pos.copy(),
+                "rpy": np.array([0.0, 0.0, yaw]),
+            }
+            type(self)._teleop_last_t = time.time()
+        return "leveled: " + result
+
 
     @tool
     def capture_wrist_view(self, save_path: str = "/tmp/wrist_view.jpg") -> str:
@@ -430,6 +847,9 @@ class A1ZArmModule(Module):
         lift: how far (m) to raise the object after grasping.
         speed: max joint speed rad/s, capped at 0.5.
         """
+        gated = self._gate()
+        if gated:
+            return gated
         robot = self._get_robot()
         if robot is None:
             return "ERROR: arm not running"

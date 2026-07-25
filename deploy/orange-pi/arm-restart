@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# 安全重启 A1Z MCP：先 arm-stop（含归位），再拉起。
+#
+# 就绪探针每 2s 一次：get_joint_state 返回 pos 即就绪；
+# 返回 "ERROR: arm not running" 说明控制环已 estop（多为启动瞬态
+# CAN stale），此时自动 arm-stop --force 重试一次，
+# 而不是干等探针超时。
+set -uo pipefail
+
+# 启动前确认内核 gs_usb 没有抢占 USB-CAN 适配器。本机控制环走用户态
+# gs_usb（pyusb，见 a1z/a1z_mac.py），内核驱动一旦绑定 a8fa:8598，
+# pyusb 就 claim 不到接口，控制环启动即 stale estop（2026-07-25 事故）。
+ensure_usb_free() {
+    local drv
+    drv=$(readlink /sys/bus/usb/devices/5-1:1.0/driver 2>/dev/null || true)
+    case "$drv" in
+        *gs_usb*)
+            echo "→ 内核 gs_usb 抢占了适配器，解绑（用户态驱动需要独占）"
+            echo orangepi | sudo -S sh -c \
+                'echo 5-1:1.0 > /sys/bus/usb/drivers/gs_usb/unbind; rmmod gs_usb 2>/dev/null' 2>/dev/null
+            sleep 1
+            ;;
+    esac
+    if [ ! -e /sys/bus/usb/devices/5-1 ]; then
+        echo "  !! USB 5-1 适配器不在位，检查接线"
+        return 1
+    fi
+}
+
+# 输出 READY / ESTOP / WAIT
+probe() {
+    ss -ltn 2>/dev/null | grep -q 9990 || { echo WAIT; return; }
+    (cd "$HOME/dimos-mcp/a1z" && ../.venv/bin/python -c "
+from mcp_call import McpSession
+s=McpSession(); s.initialize()
+r=s.tool('get_joint_state', {})
+print('ESTOP' if r.startswith('ERROR: arm not running')
+      else ('READY' if r.startswith('pos') else 'WAIT'))" 2>/dev/null) || echo WAIT
+}
+
+start_server() {
+    echo "→ 重新启动"
+    cd "$HOME/dimos-mcp" && setsid nohup ./run.sh > /tmp/a1z_run.log 2>&1 < /dev/null &
+}
+
+wait_ready() {  # 0=就绪 1=estop 2=超时
+    for _ in $(seq 1 25); do
+        sleep 2
+        case "$(probe)" in
+            READY) echo "  已就绪"; return 0 ;;
+            ESTOP) echo "  !! 控制环 estop（get_joint_state 报 arm not running）"; return 1 ;;
+        esac
+    done
+    echo "  !! 启动超时，检查 /tmp/a1z_run.log"; return 2
+}
+
+"$HOME/bin/arm-stop" "$@" || exit 1
+ensure_usb_free
+start_server
+if wait_ready; then
+    exit 0
+fi
+
+echo "→ 自动重试一次（--force 停止后重启）"
+"$HOME/bin/arm-stop" --force || exit 1
+ensure_usb_free
+start_server
+if wait_ready; then
+    exit 0
+fi
+
+# 两次都失败：停掉残留的 estop 进程（它会一直占着 USB 设备并周期性复位），
+# 并给出硬件提示——2026-07-25 的零反馈 estop 最终定位为电机侧不上电
+# （适配器回环自检正常，电机完全不应答，当天上午有 joint4 欠压故障史）。
+"$HOME/bin/arm-stop" --force >/dev/null 2>&1
+echo "  !! 两次启动均 estop。若日志是 'CAN feedback stale' + 'Gripper home timed out'"
+echo "     组合：CAN 适配器自检正常但电机零应答 → 检查机械臂电源 / CAN 接线（物理）。"
+exit 1

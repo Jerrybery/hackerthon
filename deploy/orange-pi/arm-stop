@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# 安全停止 A1Z MCP。
+#
+# 必须先调 shutdown 工具：它会把手臂归到零位、软释放、再断电。
+# 直接 pkill 会让电机瞬间失能——抬起的手臂会直接砸到桌面上。
+# （模块 docstring 原话：On exit the control loop stops and motors DISABLE
+#   — support the arm first.）
+#
+#   arm-stop            shutdown 失败就中止，不强杀
+#   arm-stop --force    仍然强杀（只有在你已经手扶住手臂时才用）
+set -uo pipefail
+A1Z="$HOME/dimos-mcp/a1z"
+FORCE=0
+[ "${1:-}" = "--force" ] && FORCE=1
+
+if ss -ltn 2>/dev/null | grep -q 9990; then
+    echo "→ 调用 shutdown（归零位 → 软释放 → 断电）"
+    if (cd "$A1Z" && timeout 90 ../.venv/bin/python -c "
+from mcp_call import McpSession
+s = McpSession(); s.initialize()
+print('  ', s.tool('shutdown', {'release_seconds': 3.0}))
+" 2>&1 | tail -2); then
+        sleep 1
+    else
+        echo "  !! shutdown 调用失败"
+        if [ "$FORCE" -eq 0 ]; then
+            echo "  已中止。手臂可能仍在抬起姿态，强杀会让它掉落。"
+            echo "  扶住手臂后用: arm-stop --force"
+            exit 1
+        fi
+        echo "  --force：继续强杀"
+    fi
+else
+    echo "→ 9990 无响应，进程可能已死；跳过 shutdown"
+fi
+
+echo "→ 停止进程"
+pkill -TERM -f "[a]1z_mcp_server.py" 2>/dev/null
+# 轮询等 TERM 生效，最多 6s（原来是固定 sleep 6）
+for _ in $(seq 1 12); do
+    pgrep -f "[a]1z_mcp_server.py" >/dev/null || break
+    sleep 0.5
+done
+pkill -KILL -f "[a]1z_mcp_server.py" 2>/dev/null
+pkill -KILL -f "[d]imos-mcp/.venv/bin/python -c from multiprocessing" 2>/dev/null
+sleep 1
+pgrep -af "[a]1z_mcp_server.py" >/dev/null && echo "  !! 仍有残留" || echo "  已停止"
