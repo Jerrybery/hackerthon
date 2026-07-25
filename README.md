@@ -1,6 +1,6 @@
 <div align="center">
 
-# Arming Soul · 武装灵魂
+# Arming Soul 
 
 ### `.xyz` — 一个没有名字的 Agent
 
