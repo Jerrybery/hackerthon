@@ -179,10 +179,10 @@ python app.py    # BLE 连接戒指，HMM 实时手势识别
 
 ## 团队
 
-AdventureX 2026 · 杭州 —— **Arming Soul** 小队
+AdventureX 2026 · 杭州 —— **品味人生** 小队
 
-| 成员 | 分工 |
-|---|---|
+| 成员 | 
+|---|
 | Jerry|
 | 山河 | 
 | Duoduo | 
