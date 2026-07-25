@@ -1,0 +1,58 @@
+const items = [
+  {
+    id: "winter",
+    number: "01",
+    name: "冬兵",
+    english: "WINTER SOLDIER",
+    role: "战术执行体",
+    signature: "TACTICAL MEMORY / COLD RESOLVE",
+    status: "COMBAT MEMORY STABLE",
+    heroImage: "/public/assets/v2/winter-silver-dream.png",
+    cardImage: "/public/assets/v2/card-winter-memory.png",
+    note: "沉默、精准、在破碎记忆中维持绝对执行力。",
+    allowsSpectralArm: false,
+  },
+  {
+    id: "johnny",
+    number: "02",
+    name: "强尼·银手",
+    english: "JOHNNY SILVERHAND",
+    role: "反叛意识体",
+    signature: "VOLATILE EGO / CHROME NOISE",
+    status: "ENGRAM SIGNAL ACTIVE",
+    heroImage: "/public/assets/v3/johnny-exact.png",
+    cardImage: "/public/assets/v2/card-johnny-noise.png",
+    note: "高噪、锋利、把每次对话都变成一次不服从。",
+    allowsSpectralArm: false,
+  },
+  {
+    id: "jarvis",
+    number: "03",
+    name: "贾维斯",
+    english: "J.A.R.V.I.S.",
+    role: "全域智能体",
+    signature: "CALM LOGIC / AMBIENT CONTROL",
+    status: "SYSTEMS FULLY ONLINE",
+    heroImage: "/public/assets/v3/jarvis-reactor.png",
+    cardImage: "/public/assets/v2/card-jarvis-optics.png",
+    note: "克制、可靠、在信息洪流中保持近乎优雅的秩序。",
+    allowsSpectralArm: false,
+  },
+  {
+    id: "custom",
+    number: "04",
+    name: "自我人格",
+    english: "SELF / LIQUID CHROME",
+    role: "可塑身份体",
+    signature: "MALLEABLE CORE / SPECTRAL ARM",
+    status: "IDENTITY SHELL READY",
+    heroImage: "/public/assets/v2/custom-silver-dream-arm.png",
+    cardImage: "/public/assets/v2/card-self-mercury.png",
+    note: "身体保持冷冽黑银，只有伸向屏幕的机械前臂承载流彩反射。",
+    allowsSpectralArm: true,
+  },
+];
+
+export const PERSONAS = Object.freeze(items.map(Object.freeze));
+
+export const getPersona = (id) => PERSONAS.find((persona) => persona.id === id);
