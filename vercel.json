@@ -1,6 +1,7 @@
 {
-  "buildCommand": "node scripts/build.mjs",
+  "rootDirectory": "frontend",
+  "buildCommand": "npm install && npm run build",
   "outputDirectory": "dist",
   "framework": null,
-  "rootDirectory": "frontend"
+  "installCommand": null
 }
