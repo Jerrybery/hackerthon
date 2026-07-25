@@ -183,11 +183,10 @@ AdventureX 2026 · 杭州 —— **Arming Soul** 小队
 
 | 成员 | 分工 |
 |---|---|
-| Jerry（[@Jerrybery](https://github.com/Jerrybery)） | 机械臂控制、MCP server、系统集成 |
-| 山河 | Agent 搭建、语音链路（ASR→LLM→TTS） |
-| Duoduo | 前端软件功能、直播、素材剪辑 |
-| Layla | 前端 PRD、路演、海报、视频、PPT |
-| 郑若文 | 自定义人格设计 |
+| Jerry|
+| 山河 | 
+| Duoduo | 
+| Layla | 
 
 ## 链接
 
